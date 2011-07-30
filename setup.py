@@ -1,6 +1,6 @@
 from setuptools import setup, find_packages
 
-version = '1.0.7'
+version = '1.0.9a1'
 
 LONG_DESCRIPTION = """
 How to use django-pagination
@@ -115,7 +115,7 @@ setup(
     keywords='pagination,django',
     author='Eric Florenzano',
     author_email='floguy@gmail.com',
-    url='http://django-pagination.googlecode.com/',
+    url='https://github.com/lincolnloop/django-pagination',
     license='BSD',
     packages=find_packages(),
     include_package_data=True,
