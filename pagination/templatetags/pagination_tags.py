@@ -11,6 +11,7 @@ from django.conf import settings
 register = template.Library()
 
 DEFAULT_PAGINATION = getattr(settings, 'PAGINATION_DEFAULT_PAGINATION', 20)
+DEFAULT_PAGE_VAR = getattr(settings, 'PAGINATION_DEFAULT_PAGE_VAR', 'page')
 DEFAULT_WINDOW = getattr(settings, 'PAGINATION_DEFAULT_WINDOW', 4)
 DEFAULT_ORPHANS = getattr(settings, 'PAGINATION_DEFAULT_ORPHANS', 0)
 INVALID_PAGE_RAISES_404 = getattr(settings,
@@ -22,11 +23,14 @@ def do_autopaginate(parser, token):
     """
     split = token.split_contents()
     as_index = None
+    by_index = None
     context_var = None
+    page_var = DEFAULT_PAGE_VAR
     for i, bit in enumerate(split):
         if bit == 'as':
             as_index = i
-            break
+        elif bit == 'by':
+            by_index = i
     if as_index is not None:
         try:
             context_var = split[as_index + 1]
@@ -35,11 +39,19 @@ def do_autopaginate(parser, token):
                 "must take the form of {%% %r object.example_set.all ... as " +
                 "context_var_name %%}" % split[0])
         del split[as_index:as_index + 2]
+    if by_index is not None:
+        try:
+            page_var = split[by_index + 1]
+        except IndexError:
+            raise template.TemplateSyntaxError("Page variable assignment " +
+                "must take the form of {%% %r object ... with " +
+                "page_var_name %%}" % split[0])
+        del split[by_index:by_index + 2]
     if len(split) == 2:
         return AutoPaginateNode(split[1])
     elif len(split) == 3:
         return AutoPaginateNode(split[1], paginate_by=split[2], 
-            context_var=context_var)
+            context_var=context_var, page_var=page_var)
     elif len(split) == 4:
         try:
             orphans = int(split[3])
@@ -47,7 +59,7 @@ def do_autopaginate(parser, token):
             raise template.TemplateSyntaxError(u'Got %s, but expected integer.'
                 % split[3])
         return AutoPaginateNode(split[1], paginate_by=split[2], orphans=orphans,
-            context_var=context_var)
+            context_var=context_var, page_var=page_var)
     else:
         raise template.TemplateSyntaxError('%r tag takes one required ' +
             'argument and one optional argument' % split[0])
@@ -70,7 +82,7 @@ class AutoPaginateNode(template.Node):
         list of available pages, or else the application may seem to be buggy.
     """
     def __init__(self, queryset_var, paginate_by=DEFAULT_PAGINATION,
-        orphans=DEFAULT_ORPHANS, context_var=None):
+        orphans=DEFAULT_ORPHANS, context_var=None, page_var=DEFAULT_PAGE_VAR):
         self.queryset_var = template.Variable(queryset_var)
         if isinstance(paginate_by, int):
             self.paginate_by = paginate_by
@@ -78,6 +90,7 @@ class AutoPaginateNode(template.Node):
             self.paginate_by = template.Variable(paginate_by)
         self.orphans = orphans
         self.context_var = context_var
+        self.page_var = page_var
 
     def render(self, context):
         key = self.queryset_var.var
@@ -87,8 +100,13 @@ class AutoPaginateNode(template.Node):
         else:
             paginate_by = self.paginate_by.resolve(context)
         paginator = Paginator(value, paginate_by, self.orphans)
+        
         try:
-            page_obj = paginator.page(context['request'].page)
+            page = int(context['request'].GET.get(self.page_var, 1))
+        except (KeyError, ValueError, TypeError):
+            page = 1
+        try:
+            page_obj = paginator.page(page)
         except InvalidPage:
             if INVALID_PAGE_RAISES_404:
                 raise Http404('Invalid page requested.  If DEBUG were set to ' +
@@ -102,6 +120,7 @@ class AutoPaginateNode(template.Node):
             context[key] = page_obj.object_list
         context['paginator'] = paginator
         context['page_obj'] = page_obj
+        context['page_var'] = self.page_var
         return u''
 
 
@@ -123,6 +142,10 @@ def paginate(context, window=DEFAULT_WINDOW, hashtag=''):
         aforementioned ``Paginator`` or ``QuerySetPaginator`` object, given
         the current page.
     
+    ``page_var``
+        This should be the name of the GET option that is provided to specify
+        the desired page.
+    
     This same ``context`` dictionary-like data structure may also include:
     
     ``getvars``
@@ -133,6 +156,7 @@ def paginate(context, window=DEFAULT_WINDOW, hashtag=''):
     try:
         paginator = context['paginator']
         page_obj = context['page_obj']
+        page_var = context['page_var']
         page_range = paginator.page_range
         # Calculate the record range in the current page for display.
         records = {'first': 1 + (page_obj.number - 1) * paginator.per_page}
@@ -209,14 +233,15 @@ def paginate(context, window=DEFAULT_WINDOW, hashtag=''):
             'pages': pages,
             'records': records,
             'page_obj': page_obj,
+            'page_var': page_var,
             'paginator': paginator,
             'hashtag': hashtag,
             'is_paginated': paginator.count > paginator.per_page,
         }
         if 'request' in context:
             getvars = context['request'].GET.copy()
-            if 'page' in getvars:
-                del getvars['page']
+            if page_var in getvars:
+                del getvars[page_var]
             if len(getvars.keys()) > 0:
                 to_return['getvars'] = "&%s" % getvars.urlencode()
             else:
